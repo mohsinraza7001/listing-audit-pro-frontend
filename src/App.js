@@ -323,6 +323,7 @@ function AuthModal({mode,onSignup,onLogin,onClose,onSwitch}) {
     try{
       if(mode==="signup") await onSignup(email,password);
       else await onLogin(email,password);
+      onClose();
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
   };
