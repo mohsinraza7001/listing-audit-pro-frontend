@@ -32,9 +32,6 @@ const G = `
   .playfair{font-family:'Playfair Display',serif;}
 `;
 
-// ══════════════════════════════════════════════════════════════
-// PRIMITIVES
-// ══════════════════════════════════════════════════════════════
 const PF = ({children,style={}}) => <span className="playfair" style={style}>{children}</span>;
 
 function GlowOrb({color=C.accent,size=400,style={}}) {
@@ -118,31 +115,81 @@ function Spinner({size=20}) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// AUTH
+// AUTH — Now calls REAL backend API (MySQL-backed)
 // ══════════════════════════════════════════════════════════════
 function useAuth() {
-  const [user,setUser]=useState(()=>{try{return JSON.parse(localStorage.getItem("ala_user"));}catch{return null;}});
-  const signup=(email,plan)=>{
-    const cr=plan==="payg"?1:plan==="starter"?12:plan==="growth"?20:40;
-    const u={email,plan,credits:cr,token:btoa(email+":"+Date.now()),createdAt:Date.now()};
-    localStorage.setItem("ala_user",JSON.stringify(u));setUser(u);
+  const [user,setUser]=useState(null);
+  const [loading,setLoading]=useState(true);
+
+  // On load, check if we have a saved token and validate it against the server
+  useEffect(() => {
+    const token = localStorage.getItem("ala_token");
+    if (!token) { setLoading(false); return; }
+
+    fetch(`${API_URL}/api/auth/me`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setUser({ ...data.user, token });
+        } else {
+          localStorage.removeItem("ala_token");
+        }
+      })
+      .catch(() => localStorage.removeItem("ala_token"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const signup = async (email, password) => {
+    const res = await fetch(`${API_URL}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Signup failed");
+    localStorage.setItem("ala_token", data.token);
+    setUser({ ...data.user, token: data.token });
+    return data.user;
   };
-  const login=(email)=>{
-    const stored=JSON.parse(localStorage.getItem("ala_user")||"null");
-    if(stored&&stored.email===email){setUser(stored);return stored;}
-    throw new Error("No account found. Please sign up.");
+
+  const login = async (email, password) => {
+    const res = await fetch(`${API_URL}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Login failed");
+    localStorage.setItem("ala_token", data.token);
+    setUser({ ...data.user, token: data.token });
+    return data.user;
   };
-  const logout=()=>{localStorage.removeItem("ala_user");setUser(null);};
-  const deductCredit=()=>{setUser(p=>{const u={...p,credits:Math.max(0,(p.credits||0)-1)};localStorage.setItem("ala_user",JSON.stringify(u));return u;});};
-  const addCredits=(n)=>{setUser(p=>{const u={...p,credits:(p.credits||0)+n};localStorage.setItem("ala_user",JSON.stringify(u));return u;});};
-  return {user,signup,login,logout,deductCredit,addCredits};
+
+  const logout = () => {
+    localStorage.removeItem("ala_token");
+    setUser(null);
+  };
+
+  const refreshUser = async () => {
+    const token = localStorage.getItem("ala_token");
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_URL}/api/auth/me`, { headers: { "Authorization": `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.success) setUser({ ...data.user, token });
+    } catch {}
+  };
+
+  return {user,signup,login,logout,refreshUser,loading};
 }
 
 // ══════════════════════════════════════════════════════════════
 // PDF EXPORT
 // ══════════════════════════════════════════════════════════════
 function exportPDF(report,email) {
-  const sc=report.scores||[];const iss=report.issues||[];const acts=report.actions||[];
+  const sc=report.scores||[];
   const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Listing Audit Report</title>
 <style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:-apple-system,'Inter',sans-serif;color:#0f172a;background:white;padding:40px;line-height:1.6;}
 .cover{text-align:center;padding:60px 0;border-bottom:3px solid #10b981;margin-bottom:40px;}
@@ -175,11 +222,11 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:20px;}th{
 <h2>Keyword Analysis</h2><h3 style="margin:16px 0 8px;font-size:14px;">Missing Keywords</h3><div>${(report.keywords?.missing||[]).map(k=>`<span class="kw miss">${k}</span>`).join("")}</div>
 <h3 style="margin:16px 0 8px;font-size:14px;">Opportunity Keywords</h3><div>${(report.keywords?.opportunities||[]).map(k=>`<span class="kw have">${k}</span>`).join("")}</div>
 <h2>Competitive Landscape</h2><table><thead><tr><th>Brand</th><th>Price</th><th>Key Specs</th><th>Differentiator</th></tr></thead><tbody>${(report.competitors||[]).map(c=>`<tr style="${c.isYours?"background:#f0fdf4":""}"><td style="font-weight:${c.isYours?700:400}">${c.name}${c.isYours?" ★ YOU":""}</td><td>${c.price||""}</td><td>${c.watts||c.specs||""}</td><td>${c.diff||c.differentiator||""}</td></tr>`).join("")}</tbody></table>
-<h2>Optimized Title</h2>${report.rewrite?.titleA?`<div class="rewrite">${report.rewrite.titleA}</div>`:""}${report.rewrite?.titleB?`<div class="rewrite">${report.rewrite.titleB}</div>`:""}${report.rewrite?.optimizedTitle?`<div class="rewrite">${report.rewrite.optimizedTitle}</div>`:""}
-<h2>Optimized Bullets</h2>${(report.rewrite?.bullets||report.rewrite?.optimizedBullets||[]).map((b,i)=>`<div class="rewrite"><strong>${i+1}.</strong> ${b}</div>`).join("")}
+<h2>Optimized Title</h2>${report.rewrite?.titleA?`<div class="rewrite">${report.rewrite.titleA}</div>`:""}${report.rewrite?.titleB?`<div class="rewrite">${report.rewrite.titleB}</div>`:""}
+<h2>Optimized Bullets</h2>${(report.rewrite?.bullets||[]).map((b,i)=>`<div class="rewrite"><strong>${i+1}.</strong> ${b}</div>`).join("")}
 ${report.rewrite?.searchTerms?`<h2>Backend Search Terms</h2><div class="rewrite" style="font-family:monospace;font-size:12px;">${report.rewrite.searchTerms}</div>`:""}
 <h2>Image & A+ Content Priorities</h2>${(report.imageRecs||[]).map(r=>`<div class="issue" style="border-left-color:${r.priority==="Critical"?"#ef4444":r.priority==="High"?"#f59e0b":"#3b82f6"}"><div class="issue-title">[${r.priority}]</div><div>${r.rec}</div></div>`).join("")}
-<h2>Priority Action Checklist</h2>${acts.map(a=>`<div class="issue" style="border-left-color:${a.p==="critical"||a.priority==="high"?"#ef4444":a.p==="high"||a.priority==="medium"?"#f59e0b":"#10b981"}"><div class="issue-title">[${(a.p||a.priority||"").toUpperCase()}] ${a.t||a.title}</div><div>${a.d||a.description}</div></div>`).join("")}
+<h2>Priority Action Checklist</h2>${(report.actions||[]).map(a=>`<div class="issue" style="border-left-color:${a.p==="critical"?"#ef4444":a.p==="high"?"#f59e0b":"#10b981"}"><div class="issue-title">[${(a.p||"").toUpperCase()}] ${a.t}</div><div>${a.d}</div></div>`).join("")}
 <div class="footer">Powered by Adaptoid Listing Audit · adaptoidecommerce.com · Generated ${new Date().toLocaleString()}</div>
 </body></html>`;
   const w=window.open("","_blank");w.document.write(html);w.document.close();setTimeout(()=>w.print(),500);
@@ -188,7 +235,7 @@ ${report.rewrite?.searchTerms?`<h2>Backend Search Terms</h2><div class="rewrite"
 // ══════════════════════════════════════════════════════════════
 // LANDING PAGE
 // ══════════════════════════════════════════════════════════════
-function Landing({onGetStarted,onLogin,onSelectPlan}) {
+function Landing({onGetStarted,onLogin}) {
   return (
     <div style={{position:"relative",overflow:"hidden"}}>
       <GlowOrb color={C.accent} size={600} style={{top:-200,right:-100}}/>
@@ -210,16 +257,11 @@ function Landing({onGetStarted,onLogin,onSelectPlan}) {
               The listing audit your <PF style={{fontStyle:"italic",fontWeight:500,color:C.accentGlow}}>competitors</PF> don't want you to have.
             </h1>
             <p style={{color:C.textSec,fontSize:18,lineHeight:1.7,marginBottom:36,maxWidth:520}}>
-              11-section deep analysis covering reviews, images, A+ content, keyword gaps, compliance risks, and a fully rewritten listing. The same report agencies charge $300+ for.
+              11-section deep analysis covering reviews, images, A+ content, keyword gaps, compliance risks, and a fully rewritten listing.
             </p>
             <div style={{display:"flex",gap:12,marginBottom:32,flexWrap:"wrap"}}>
               <Btn size="lg" onClick={onGetStarted}>Run Your First Audit →</Btn>
               <Btn variant="ghost" size="lg" onClick={()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"})}>See Pricing</Btn>
-            </div>
-            <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
-              {["Voice of Customer","Image & A+ audit","Competitor benchmarking"].map((t,i)=>(
-                <div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:C.textSec}}><span style={{color:C.accent}}>✓</span>{t}</div>
-              ))}
             </div>
           </div>
           <Card glow style={{padding:28}}>
@@ -232,53 +274,25 @@ function Landing({onGetStarted,onLogin,onSelectPlan}) {
         </div>
       </section>
 
-      <section style={{background:C.surface,padding:"40px",borderTop:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`}}>
-        <div style={{maxWidth:1100,margin:"0 auto",display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:32,textAlign:"center"}}>
-          {[{n:"11",l:"Audit sections"},{n:"$300+",l:"Agency equivalent"},{n:"~60s",l:"Generation time"},{n:"$0.18",l:"Per audit cost"}].map((s,i)=>(
-            <div key={i}><PF style={{fontWeight:600,fontSize:36,color:C.accentGlow,display:"block"}}>{s.n}</PF><div style={{fontSize:13,color:C.muted,marginTop:6,fontWeight:500}}>{s.l}</div></div>
-          ))}
-        </div>
-      </section>
-
-      <section style={{padding:"100px 40px",maxWidth:1100,margin:"0 auto",position:"relative",zIndex:2}}>
-        <div style={{textAlign:"center",marginBottom:64}}>
-          <div style={{fontSize:11,color:C.accentGlow,letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:600,marginBottom:12}}>What's Included</div>
-          <h2 style={{fontWeight:800,fontSize:"clamp(28px,4.5vw,44px)",letterSpacing:"-0.03em"}}>Every section of a <PF style={{fontStyle:"italic",fontWeight:500,color:C.accentGlow}}>$300 agency</PF> report.</h2>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:20}}>
-          {[
-            {n:"01",t:"Executive Summary"},{n:"02",t:"Live Listing Snapshot"},{n:"03",t:"Compliance Risks"},
-            {n:"04",t:"Voice of Customer"},{n:"05",t:"Keyword Performance"},{n:"06",t:"Competitive Landscape"},
-            {n:"07",t:"Feature-Gap Analysis"},{n:"08",t:"Pricing & Value"},{n:"09",t:"Optimized Copy"},
-            {n:"10",t:"Image & A+ Priorities"},{n:"11",t:"Priority Actions"},{n:"📄",t:"PDF Export"},
-          ].map((f,i)=>(
-            <div key={i} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:24,animation:`fadeUp 0.4s ease ${i*0.04}s both`}}>
-              <PF style={{fontWeight:500,fontSize:28,color:C.accent,display:"block",marginBottom:12}}>{f.n}</PF>
-              <div style={{fontWeight:600,fontSize:15,color:C.text}}>{f.t}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <section id="pricing" style={{padding:"100px 40px",maxWidth:1100,margin:"0 auto",position:"relative",zIndex:2}}>
         <div style={{textAlign:"center",marginBottom:56}}>
           <div style={{fontSize:11,color:C.accentGlow,letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:600,marginBottom:12}}>Pricing</div>
           <h2 style={{fontWeight:800,fontSize:"clamp(28px,4.5vw,44px)",letterSpacing:"-0.03em",marginBottom:16}}>Simple, <PF style={{fontStyle:"italic",fontWeight:500,color:C.accentGlow}}>transparent</PF> pricing.</h2>
         </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:16}}>
           {[
-            {n:"Pay as you go",p:"$1",per:"/audit",cr:"1 audit",feats:["Full 11-section report","Up to 4 competitors","PDF export"],cta:"Buy 1 credit",plan:"payg"},
-            {n:"Starter",p:"$10",per:"/month",cr:"12 audits",feats:["12 audits/month","Up to 6 competitors","PDF export"],cta:"Start Starter",plan:"starter"},
-            {n:"Growth",p:"$15",per:"/month",cr:"20 audits",pop:true,feats:["20 audits/month","Up to 8 competitors","Priority support"],cta:"Start Growth",plan:"growth"},
-            {n:"Pro",p:"$25",per:"/month",cr:"40 audits",feats:["40 audits/month","Up to 10 competitors","White-label reports"],cta:"Start Pro",plan:"pro"},
+            {n:"1 Audit",p:"$1",per:"one-time",href:"https://adaptoidecommerce.lemonsqueezy.com/buy/1202314"},
+            {n:"3 Audits",p:"$5",per:"one-time",href:"https://adaptoidecommerce.lemonsqueezy.com/buy/1202326"},
+            {n:"Starter",p:"$10",per:"/month",cr:"12 audits",href:"https://adaptoidecommerce.lemonsqueezy.com/buy/1202331"},
+            {n:"Growth",p:"$15",per:"/month",cr:"20 audits",pop:true,href:"https://adaptoidecommerce.lemonsqueezy.com/buy/1202337"},
+            {n:"Pro",p:"$25",per:"/month",cr:"40 audits",href:"https://adaptoidecommerce.lemonsqueezy.com/buy/1202339"},
           ].map((pl,i)=>(
             <div key={i} style={{background:pl.pop?C.accent:C.surface,border:`1px solid ${pl.pop?C.accent:C.border}`,borderRadius:14,padding:28,position:"relative",color:pl.pop?"white":C.text}}>
               {pl.pop&&<div style={{position:"absolute",top:-11,left:20,background:"white",color:C.accent,fontSize:10,fontWeight:700,padding:"4px 12px",borderRadius:20}}>Most popular</div>}
               <div style={{fontSize:11,fontWeight:700,color:pl.pop?"rgba(255,255,255,0.7)":C.muted,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:16}}>{pl.n}</div>
-              <div style={{display:"flex",alignItems:"baseline",gap:4,marginBottom:6}}><PF style={{fontWeight:600,fontSize:42,letterSpacing:"-0.03em"}}>{pl.p}</PF><span style={{fontSize:14,color:pl.pop?"rgba(255,255,255,0.6)":C.muted}}>{pl.per}</span></div>
-              <div style={{fontSize:13,color:pl.pop?"rgba(255,255,255,0.7)":C.textSec,marginBottom:24}}>{pl.cr}</div>
-              <ul style={{listStyle:"none",marginBottom:28}}>{pl.feats.map((f,j)=>(<li key={j} style={{fontSize:13,padding:"5px 0",display:"flex",gap:10,color:pl.pop?"rgba(255,255,255,0.9)":C.textSec}}><span style={{color:pl.pop?"white":C.accent,fontWeight:700}}>✓</span>{f}</li>))}</ul>
-              <button onClick={()=>onSelectPlan(pl.plan)} style={{width:"100%",padding:"11px",borderRadius:8,background:pl.pop?"white":C.accent,color:pl.pop?C.accent:"white",border:"none",fontWeight:600,fontSize:14,cursor:"pointer"}}>{pl.cta}</button>
+              <div style={{display:"flex",alignItems:"baseline",gap:4,marginBottom:6}}><PF style={{fontWeight:600,fontSize:38,letterSpacing:"-0.03em"}}>{pl.p}</PF><span style={{fontSize:13,color:pl.pop?"rgba(255,255,255,0.6)":C.muted}}>{pl.per}</span></div>
+              {pl.cr&&<div style={{fontSize:12,color:pl.pop?"rgba(255,255,255,0.7)":C.textSec,marginBottom:20}}>{pl.cr}</div>}
+              <a href={pl.href} target="_blank" rel="noopener noreferrer" style={{display:"block",textAlign:"center",width:"100%",padding:"11px",borderRadius:8,background:pl.pop?"white":C.accent,color:pl.pop?C.accent:"white",border:"none",fontWeight:600,fontSize:14,cursor:"pointer",textDecoration:"none",marginTop:12}}>Buy Now</a>
             </div>
           ))}
         </div>
@@ -296,20 +310,26 @@ function Landing({onGetStarted,onLogin,onSelectPlan}) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// AUTH MODAL
+// AUTH MODAL — Now calls real backend
 // ══════════════════════════════════════════════════════════════
-function AuthModal({mode,initialPlan,onAuth,onClose,onSwitch}) {
-  const [email,setEmail]=useState("");const [password,setPassword]=useState("");const [plan,setPlan]=useState(initialPlan||"starter");
+function AuthModal({mode,onSignup,onLogin,onClose,onSwitch}) {
+  const [email,setEmail]=useState("");const [password,setPassword]=useState("");
   const [error,setError]=useState("");const [loading,setLoading]=useState(false);
   const inp={width:"100%",background:C.surface2,border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 14px",color:C.text,fontSize:14,outline:"none"};
+
   const handle=async()=>{
     if(!email||!password){setError("Please fill in all fields.");return;}
     setLoading(true);setError("");
-    try{await new Promise(r=>setTimeout(r,500));onAuth(email,password,plan);}catch(e){setError(e.message);}finally{setLoading(false);}
+    try{
+      if(mode==="signup") await onSignup(email,password);
+      else await onLogin(email,password);
+    }catch(e){setError(e.message);}
+    finally{setLoading(false);}
   };
+
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(6,11,24,0.85)",backdropFilter:"blur(6px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:24,animation:"fadeIn 0.2s ease both"}}>
-      <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:18,padding:36,width:"100%",maxWidth:440,animation:"fadeUp 0.3s ease both"}}>
+      <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:18,padding:36,width:"100%",maxWidth:420,animation:"fadeUp 0.3s ease both"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <h2 style={{fontWeight:700,fontSize:24,letterSpacing:"-0.02em"}}>{mode==="signup"?"Create account":"Welcome back"}</h2>
           <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,fontSize:24,cursor:"pointer"}}>×</button>
@@ -318,19 +338,7 @@ function AuthModal({mode,initialPlan,onAuth,onClose,onSwitch}) {
         {error&&<div style={{background:C.redSoft,border:`1px solid #ef444430`,borderRadius:8,padding:"10px 14px",fontSize:13,color:"#fca5a5",marginBottom:16}}>{error}</div>}
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
           <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:6}}>Email</label><input style={inp} type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></div>
-          <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:6}}>Password</label><input style={inp} type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••"/></div>
-          {mode==="signup"&&(
-            <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:8}}>Select plan</label>
-              <div style={{display:"grid",gap:8}}>
-                {[{id:"payg",n:"Pay as you go",p:"$1",cr:"1"},{id:"starter",n:"Starter",p:"$10/mo",cr:"12"},{id:"growth",n:"Growth",p:"$15/mo",cr:"20",pop:true},{id:"pro",n:"Pro",p:"$25/mo",cr:"40"}].map(pl=>(
-                  <div key={pl.id} onClick={()=>setPlan(pl.id)} style={{padding:"11px 14px",borderRadius:8,cursor:"pointer",border:`1.5px solid ${plan===pl.id?C.accent:C.border}`,background:plan===pl.id?C.greenSoft:C.surface2,display:"flex",alignItems:"center",justifyContent:"space-between",transition:"all 0.15s"}}>
-                    <div><div style={{fontSize:14,fontWeight:600}}>{pl.n} {pl.pop&&<span style={{fontSize:9,background:C.accent,color:"white",padding:"2px 6px",borderRadius:4,marginLeft:6,fontWeight:700}}>POPULAR</span>}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{pl.cr} audit{pl.cr!=="1"?"s":""}</div></div>
-                    <div style={{fontSize:14,fontWeight:700,color:plan===pl.id?C.accentGlow:C.text}}>{pl.p}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:6}}>Password</label><input style={inp} type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="•••••••• (min 6 characters)"/></div>
         </div>
         <Btn onClick={handle} disabled={loading} style={{width:"100%",marginTop:20,padding:"13px"}}>{loading?<><Spinner size={16}/> Processing…</>:mode==="signup"?"Create account →":"Log in →"}</Btn>
         <p style={{textAlign:"center",fontSize:13,color:C.textSec,marginTop:20}}>{mode==="signup"?"Already have an account? ":"Don't have an account? "}<span onClick={onSwitch} style={{color:C.accentGlow,cursor:"pointer",fontWeight:600}}>{mode==="signup"?"Log in":"Sign up"}</span></p>
@@ -340,40 +348,14 @@ function AuthModal({mode,initialPlan,onAuth,onClose,onSwitch}) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// BUY CREDITS MODAL
-// ══════════════════════════════════════════════════════════════
-function BuyModal({onClose,onPurchase}) {
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(6,11,24,0.85)",backdropFilter:"blur(6px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:24,animation:"fadeIn 0.2s ease both"}}>
-      <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:18,padding:36,width:"100%",maxWidth:460,animation:"fadeUp 0.3s ease both"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-          <h2 style={{fontWeight:700,fontSize:22,letterSpacing:"-0.02em"}}>Get more credits</h2>
-          <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,fontSize:24,cursor:"pointer"}}>×</button>
-        </div>
-        <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          {[{cr:1,p:"$1",tag:"Single audit"},{cr:5,p:"$4",tag:"Save 20%"},{cr:15,p:"$10",tag:"Save 33%",pop:true}].map((p,i)=>(
-            <div key={i} onClick={()=>onPurchase(p.cr)} style={{padding:"16px 20px",borderRadius:10,cursor:"pointer",border:`1.5px solid ${p.pop?C.accent:C.border}`,background:p.pop?C.greenSoft:C.surface2,display:"flex",alignItems:"center",justifyContent:"space-between",transition:"all 0.15s"}}>
-              <div><PF style={{fontWeight:600,fontSize:18,display:"block"}}>{p.cr} {p.cr===1?"credit":"credits"}</PF><div style={{fontSize:12,color:p.pop?C.accentGlow:C.muted,marginTop:4,fontWeight:500}}>{p.tag}</div></div>
-              <PF style={{fontWeight:600,fontSize:22}}>{p.p}</PF>
-            </div>
-          ))}
-        </div>
-        <div style={{marginTop:20,padding:12,background:C.surface2,border:`1px solid ${C.border}`,borderRadius:8,fontSize:12,color:C.textSec,textAlign:"center"}}>💳 Secure checkout via Stripe · Coming soon</div>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════
 // AUDIT TOOL
 // ══════════════════════════════════════════════════════════════
-function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
+function AuditTool({user,onLogout,onRefreshUser}) {
   const [phase,setPhase]=useState("input");
   const [report,setReport]=useState(null);
   const [loadStep,setLoadStep]=useState(0);
   const [tab,setTab]=useState("summary");
 
-  // Form state
   const [asin,setAsin]=useState("");const [price,setPrice]=useState("");const [bsr,setBsr]=useState("");
   const [title,setTitle]=useState("");const [bullets,setBullets]=useState("");const [description,setDescription]=useState("");
   const [reviews,setReviews]=useState("");const [imageDesc,setImageDesc]=useState("");const [aplusDesc,setAplusDesc]=useState("");
@@ -384,22 +366,25 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
 
   const inp={width:"100%",background:C.surface2,border:`1.5px solid ${C.border}`,borderRadius:10,padding:"11px 14px",color:C.text,fontSize:14,outline:"none",transition:"border-color 0.2s"};
   const canRun=title.trim()&&bullets.trim()&&user.credits>=1;
-  const planLabel=user.plan==="payg"?"PAYG":user.plan?.toUpperCase();
+  const planLabel=user.plan==="none"?"FREE":user.plan?.toUpperCase();
 
   const runAudit=async()=>{
-    if(user.credits<1){alert("Out of credits. Please buy more.");return;}
+    if(user.credits<1){alert("Out of credits. Please buy more from the pricing page.");return;}
     setPhase("loading");setLoadStep(0);
     const iv=setInterval(()=>setLoadStep(p=>p>=STEPS.length-2?p:p+1),2200);
     try {
       const res=await fetch(`${API_URL}/api/audit`,{
         method:"POST",
-        headers:{"Content-Type":"application/json","x-user-token":user.token},
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${user.token}`},
         body:JSON.stringify({title,bullets,description,asin,price,bsr,reviews,imageDesc,aplusDesc,keywords,competitors:competitors.filter(c=>c.asin.trim()||c.title.trim())})
       });
       const data=await res.json();
       if(!res.ok) throw new Error(data.error||"Server error");
       clearInterval(iv);setLoadStep(STEPS.length-1);
-      setTimeout(()=>{setReport(data.report);setPhase("report");setTab("summary");onDeductCredit();},800);
+      setTimeout(async()=>{
+        setReport(data.report);setPhase("report");setTab("summary");
+        await onRefreshUser();
+      },800);
     } catch(err){clearInterval(iv);alert("Error: "+err.message);setPhase("input");}
   };
 
@@ -414,9 +399,9 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
       <nav style={{background:`${C.bg}dd`,backdropFilter:"blur(16px)",borderBottom:`1px solid ${C.border}`,padding:"14px 32px",display:"flex",alignItems:"center",gap:12,position:"sticky",top:0,zIndex:100}}>
         <div style={{width:32,height:32,borderRadius:8,background:C.gradient,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontWeight:800,fontSize:14}}>A</div>
         <span style={{fontWeight:700,fontSize:14,flex:1}}>Adaptoid <span style={{color:C.accentGlow}}>Listing Audit</span></span>
-        <div onClick={onBuyCredits} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 14px",borderRadius:20,background:user.credits>3?C.greenSoft:C.yellowSoft,border:`1px solid ${user.credits>3?C.accent+"30":C.yellow+"30"}`,cursor:"pointer"}}>
+        <a href="#pricing" onClick={(e)=>{e.preventDefault();window.location.hash="";window.location.reload();}} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 14px",borderRadius:20,background:user.credits>3?C.greenSoft:C.yellowSoft,border:`1px solid ${user.credits>3?C.accent+"30":C.yellow+"30"}`,cursor:"pointer",textDecoration:"none"}}>
           <span style={{fontSize:13}}>⚡</span><span style={{fontSize:13,fontWeight:700,color:user.credits>3?C.accentGlow:C.yellow}}>{user.credits} credits</span>
-        </div>
+        </a>
         <div style={{fontSize:10,background:`${C.blue}20`,color:C.blue,padding:"4px 10px",borderRadius:20,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>{planLabel}</div>
         <button onClick={onLogout} style={{background:"none",border:`1px solid ${C.border}`,color:C.textSec,padding:"7px 14px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:500}}>Log out</button>
       </nav>
@@ -447,15 +432,14 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             <Card>
               <CardH icon="⭐" title="Customer Reviews" sub="Paste 5-10 reviews for Voice of Customer analysis" badge={{l:"Recommended",c:"green"}}/>
               <div style={{padding:24}}>
-                <p style={{fontSize:13,color:C.textSec,marginBottom:14}}>Copy both positive and negative reviews from your listing page for the best analysis.</p>
-                <textarea style={{...inp,minHeight:140,lineHeight:1.7,resize:"vertical"}} value={reviews} onChange={e=>setReviews(e.target.value)} placeholder={"★★★★★ 'Great product, the dual voltage is perfect for travel...'\n\n★★★☆☆ 'Works well but heavier than claimed...'"}/>
+                <textarea style={{...inp,minHeight:140,lineHeight:1.7,resize:"vertical"}} value={reviews} onChange={e=>setReviews(e.target.value)} placeholder={"★★★★★ 'Great product...'\n\n★★★☆☆ 'Works well but...'"}/>
               </div>
             </Card>
 
             <Card>
               <CardH icon="🖼️" title="Images & A+ Content" sub="Describe your images and A+ modules" badge={{l:"Optional",c:"blue"}}/>
               <div style={{padding:24,display:"flex",flexDirection:"column",gap:16}}>
-                <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:6}}>Image Descriptions</label><textarea style={{...inp,minHeight:100,lineHeight:1.7,resize:"vertical"}} value={imageDesc} onChange={e=>setImageDesc(e.target.value)} placeholder={"Image 1: Product on white background\nImage 2: Steamer in use on shirt\nImage 3: Accessories kit layout\n..."}/></div>
+                <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:6}}>Image Descriptions</label><textarea style={{...inp,minHeight:100,lineHeight:1.7,resize:"vertical"}} value={imageDesc} onChange={e=>setImageDesc(e.target.value)} placeholder={"Image 1: Product on white background\nImage 2: Steamer in use\n..."}/></div>
                 <div><label style={{fontSize:12,color:C.textSec,fontWeight:600,display:"block",marginBottom:6}}>A+ Content Description</label><textarea style={{...inp,minHeight:80,lineHeight:1.7,resize:"vertical"}} value={aplusDesc} onChange={e=>setAplusDesc(e.target.value)} placeholder="Describe your A+ content modules…"/></div>
               </div>
             </Card>
@@ -463,9 +447,8 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             <Card>
               <CardH icon="🔍" title="Competitor Listings" sub="Add competitor details for benchmarking" badge={{l:`${competitors.length} of 10`,c:"blue"}}/>
               <div style={{padding:24}}>
-                <p style={{fontSize:13,color:C.textSec,marginBottom:16}}>Add competitor title, price, and key specs for deeper competitive analysis.</p>
                 {competitors.map((comp,i)=>(
-                  <div key={i} style={{background:C.surface2,border:`1px solid ${C.border}`,borderRadius:10,padding:16,marginBottom:12,position:"relative"}}>
+                  <div key={i} style={{background:C.surface2,border:`1px solid ${C.border}`,borderRadius:10,padding:16,marginBottom:12}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                       <div style={{fontSize:12,fontWeight:700,color:C.accentGlow,letterSpacing:"0.05em"}}>COMPETITOR {i+1}</div>
                       {competitors.length>1&&<button onClick={()=>removeComp(i)} style={{background:"none",border:`1px solid ${C.border}`,color:C.muted,width:28,height:28,borderRadius:6,cursor:"pointer",fontSize:14}}>×</button>}
@@ -485,15 +468,14 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             <Card>
               <CardH icon="🔑" title="Keyword Data" sub="Paste keywords with search volume" badge={{l:"Recommended",c:"green"}}/>
               <div style={{padding:24}}>
-                <p style={{fontSize:13,color:C.textSec,marginBottom:14}}>Paste your keyword list from Helium10/SellerSprite. Format: one keyword per line, optionally with search volume.</p>
-                <textarea style={{...inp,minHeight:120,lineHeight:1.7,resize:"vertical",fontFamily:"monospace",fontSize:13}} value={keywords} onChange={e=>setKeywords(e.target.value)} placeholder={"travel steamer for clothes - 18,200\nhandheld clothes steamer - 12,400\ndual voltage steamer - 2,800"}/>
+                <textarea style={{...inp,minHeight:120,lineHeight:1.7,resize:"vertical",fontFamily:"monospace",fontSize:13}} value={keywords} onChange={e=>setKeywords(e.target.value)} placeholder={"travel steamer for clothes - 18,200\nhandheld clothes steamer - 12,400"}/>
               </div>
             </Card>
 
             {user.credits<1?(
               <div style={{background:C.yellowSoft,border:`1px solid ${C.yellow}30`,borderRadius:10,padding:"16px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
-                <div><div style={{fontSize:14,fontWeight:600,color:C.yellow,marginBottom:4}}>⚡ Out of credits</div><div style={{fontSize:13,color:C.textSec}}>Buy more credits or upgrade your plan.</div></div>
-                <Btn onClick={onBuyCredits} size="sm">Get credits →</Btn>
+                <div><div style={{fontSize:14,fontWeight:600,color:C.yellow,marginBottom:4}}>⚡ Out of credits</div><div style={{fontSize:13,color:C.textSec}}>Buy more credits from the pricing page.</div></div>
+                <Btn onClick={onLogout} size="sm">View Pricing →</Btn>
               </div>
             ):(
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 18px",background:C.surface2,borderRadius:10,border:`1px solid ${C.border}`}}>
@@ -548,7 +530,6 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             </div>
           </div>
 
-          {/* Hero metrics */}
           <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1fr",gap:16,marginBottom:28}}>
             <Card glow delay={0.05} style={{padding:28}}>
               <div style={{fontSize:11,color:C.muted,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:600,marginBottom:20}}>Overall Score</div>
@@ -556,7 +537,7 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
                 <ScoreRing score={report.overallScore||0} size={120}/>
                 <div>
                   <PF style={{fontWeight:600,fontSize:22,color:C.text,display:"block"}}>{(report.overallScore||0)>=80?"Excellent":(report.overallScore||0)>=60?"Needs Work":"Critical"}</PF>
-                  <div style={{fontSize:13,color:C.textSec,marginTop:4}}>{report.issues?.length||report.compliance?.length||0} issues found</div>
+                  <div style={{fontSize:13,color:C.textSec,marginTop:4}}>{report.compliance?.length||0} issues found</div>
                 </div>
               </div>
             </Card>
@@ -572,39 +553,34 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             </Card>
           </div>
 
-          {/* Summary */}
           <Card delay={0.2} style={{padding:28,marginBottom:28,background:C.bgAlt}}>
             <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
               <div style={{width:40,height:40,borderRadius:10,background:C.gradient,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>💡</div>
               <div>
                 <div style={{fontSize:11,color:C.muted,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:600,marginBottom:8}}>Executive Summary</div>
-                <p style={{fontSize:15,color:C.text,lineHeight:1.75}}>{report.summary||report.overallSummary||""}</p>
+                <p style={{fontSize:15,color:C.text,lineHeight:1.75}}>{report.summary||""}</p>
               </div>
             </div>
           </Card>
 
-          {/* Tabs */}
           <div style={{display:"flex",gap:4,marginBottom:24,background:C.surface,padding:5,borderRadius:10,border:`1px solid ${C.border}`,overflowX:"auto"}}>
             {[{id:"summary",l:"📊 Scores"},{id:"compliance",l:"⚠️ Compliance"},{id:"voc",l:"⭐ Reviews"},{id:"keywords",l:"🔑 Keywords"},{id:"competitors",l:"🔍 Competitors"},{id:"rewrite",l:"✍️ Rewrite"},{id:"images",l:"🖼️ Images"},{id:"actions",l:"🚀 Actions"}].map(t=>(
               <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 14px",border:"none",borderRadius:7,background:tab===t.id?C.gradient:"transparent",color:tab===t.id?"white":C.muted,fontWeight:600,fontSize:12,cursor:"pointer",whiteSpace:"nowrap",minWidth:80,boxShadow:tab===t.id?"0 2px 8px #10b98130":"none",transition:"all 0.2s"}}>{t.l}</button>
             ))}
           </div>
 
-          {/* SCORES */}
-          {tab==="summary"&&<Card><CardH icon="📊" title="Category Scores"/><div style={{padding:28}}>{(report.scores||[]).map((s,i)=><MiniBar key={i} label={s.label||s.l} value={s.value||s.v} max={s.max||s.m||10} delay={i*0.06}/>)}</div></Card>}
+          {tab==="summary"&&<Card><CardH icon="📊" title="Category Scores"/><div style={{padding:28}}>{(report.scores||[]).map((s,i)=><MiniBar key={i} label={s.l} value={s.v} max={s.m||10} delay={i*0.06}/>)}</div></Card>}
 
-          {/* COMPLIANCE */}
-          {tab==="compliance"&&<Card><CardH icon="⚠️" title="Compliance & Accuracy Risks" badge={{l:`${(report.compliance||report.issues||[]).length} risks`,c:"red"}}/>
-            <div style={{padding:"0 24px"}}>{(report.compliance||report.issues||[]).map((c,i)=>{
-              const sc=(c.sev||c.type)==="critical"||(c.sev||c.type)==="error"?C.red:(c.sev||c.type)==="high"||(c.sev||c.type)==="warning"?C.yellow:C.blue;
-              return (<div key={i} style={{padding:"20px 0",borderBottom:i<(report.compliance||report.issues||[]).length-1?`1px solid ${C.border}`:"none",display:"flex",gap:16}}>
-                <div style={{fontSize:10,fontWeight:700,color:sc,background:`${sc}18`,padding:"4px 10px",borderRadius:20,height:"fit-content",letterSpacing:"0.05em",textTransform:"uppercase",flexShrink:0}}>{c.sev||c.type}</div>
-                <div><div style={{fontWeight:600,fontSize:15,color:C.text,marginBottom:6}}>{c.title}</div><div style={{fontSize:14,color:C.textSec,lineHeight:1.6,marginBottom:10}}>{c.desc||c.description}</div>{c.fix&&<div style={{fontSize:13,color:C.accentGlow,fontWeight:500,background:C.greenSoft,padding:"10px 14px",borderRadius:8,borderLeft:`3px solid ${C.accent}`}}>→ {c.fix}</div>}</div>
+          {tab==="compliance"&&<Card><CardH icon="⚠️" title="Compliance & Accuracy Risks" badge={{l:`${(report.compliance||[]).length} risks`,c:"red"}}/>
+            <div style={{padding:"0 24px"}}>{(report.compliance||[]).map((c,i)=>{
+              const sc=c.sev==="critical"?C.red:c.sev==="high"?C.yellow:C.blue;
+              return (<div key={i} style={{padding:"20px 0",borderBottom:i<(report.compliance||[]).length-1?`1px solid ${C.border}`:"none",display:"flex",gap:16}}>
+                <div style={{fontSize:10,fontWeight:700,color:sc,background:`${sc}18`,padding:"4px 10px",borderRadius:20,height:"fit-content",letterSpacing:"0.05em",textTransform:"uppercase",flexShrink:0}}>{c.sev}</div>
+                <div><div style={{fontWeight:600,fontSize:15,color:C.text,marginBottom:6}}>{c.title}</div><div style={{fontSize:14,color:C.textSec,lineHeight:1.6,marginBottom:10}}>{c.desc}</div>{c.fix&&<div style={{fontSize:13,color:C.accentGlow,fontWeight:500,background:C.greenSoft,padding:"10px 14px",borderRadius:8,borderLeft:`3px solid ${C.accent}`}}>→ {c.fix}</div>}</div>
               </div>);
             })}</div>
           </Card>}
 
-          {/* VOC */}
           {tab==="voc"&&(
             <div style={{display:"flex",flexDirection:"column",gap:20}}>
               <Card><CardH icon="💚" title="What Customers Love" badge={{l:"Amplify",c:"green"}}/>
@@ -626,10 +602,9 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             </div>
           )}
 
-          {/* KEYWORDS */}
           {tab==="keywords"&&(
             <div style={{display:"flex",flexDirection:"column",gap:20}}>
-              {report.keywords?.performing&&<Card><CardH icon="📈" title="Top Performing Keywords"/>
+              {report.keywords?.performing?.length>0&&<Card><CardH icon="📈" title="Top Performing Keywords"/>
                 <div style={{overflow:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                   <thead><tr>{["Keyword","Click Share","Rank"].map((h,i)=><th key={i} style={{textAlign:"left",padding:"14px 20px",background:C.surface2,color:C.muted,fontSize:11,letterSpacing:"0.06em",textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,fontWeight:600}}>{h}</th>)}</tr></thead>
                   <tbody>{(report.keywords.performing||[]).map((k,i)=><tr key={i}><td style={{padding:"14px 20px",borderBottom:`1px solid ${C.border}`,fontWeight:600,color:C.text}}>{k.kw}</td><td style={{padding:"14px 20px",borderBottom:`1px solid ${C.border}`,color:C.accentGlow,fontWeight:600}}>{k.share}</td><td style={{padding:"14px 20px",borderBottom:`1px solid ${C.border}`,color:C.textSec}}>{k.rank}</td></tr>)}</tbody>
@@ -644,7 +619,6 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             </div>
           )}
 
-          {/* COMPETITORS */}
           {tab==="competitors"&&(
             <div style={{display:"flex",flexDirection:"column",gap:20}}>
               <Card><CardH icon="🔍" title="Competitive Landscape"/>
@@ -654,8 +628,8 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
                     <tr key={i} style={{background:c.isYours?`${C.accent}08`:"transparent"}}>
                       <td style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,fontWeight:c.isYours?700:500,color:C.text}}>{c.name}{c.isYours&&<span style={{marginLeft:8,fontSize:9,background:C.accent,color:"white",padding:"2px 8px",borderRadius:20,fontWeight:700}}>YOU</span>}</td>
                       <td style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,fontWeight:600,color:C.text}}>{c.price}</td>
-                      <td style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,color:C.textSec}}>{c.watts||c.specs||""}</td>
-                      <td style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,color:C.textSec,fontSize:12}}>{c.diff||c.differentiator||""}</td>
+                      <td style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,color:C.textSec}}>{c.watts}</td>
+                      <td style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,color:C.textSec,fontSize:12}}>{c.diff}</td>
                     </tr>))}</tbody>
                 </table></div>
               </Card>
@@ -673,18 +647,17 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             </div>
           )}
 
-          {/* REWRITE */}
           {tab==="rewrite"&&(
             <div style={{display:"flex",flexDirection:"column",gap:20}}>
-              {(report.rewrite?.titleA||report.rewrite?.optimizedTitle)&&<Card><CardH icon="✍️" title="Optimized Title" badge={{l:"AI Rewritten",c:"blue"}}/>
+              {(report.rewrite?.titleA)&&<Card><CardH icon="✍️" title="Optimized Title" badge={{l:"AI Rewritten",c:"blue"}}/>
                 <div style={{padding:24}}>
-                  <div style={{background:`${C.accent}0d`,border:`1px solid ${C.accent}30`,borderRadius:10,padding:16,fontSize:14,lineHeight:1.75,color:C.text}}>{report.rewrite.titleA||report.rewrite.optimizedTitle}</div>
+                  <div style={{background:`${C.accent}0d`,border:`1px solid ${C.accent}30`,borderRadius:10,padding:16,fontSize:14,lineHeight:1.75,color:C.text}}>{report.rewrite.titleA}</div>
                   {report.rewrite.titleB&&<><div style={{fontSize:11,color:C.muted,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:600,marginTop:16,marginBottom:8}}>Option B</div><div style={{background:`${C.accent}0d`,border:`1px solid ${C.accent}30`,borderRadius:10,padding:16,fontSize:14,lineHeight:1.75,color:C.text}}>{report.rewrite.titleB}</div></>}
                 </div>
               </Card>}
-              <Card><CardH icon="📋" title="Optimized Bullets" badge={{l:"AI Rewritten",c:"blue"}} action={<button onClick={()=>navigator.clipboard.writeText((report.rewrite?.bullets||report.rewrite?.optimizedBullets||[]).join("\n\n"))} style={{background:C.surface2,border:`1px solid ${C.border}`,color:C.textSec,padding:"6px 14px",borderRadius:6,fontSize:12,cursor:"pointer",fontWeight:500}}>Copy all</button>}/>
+              <Card><CardH icon="📋" title="Optimized Bullets" badge={{l:"AI Rewritten",c:"blue"}} action={<button onClick={()=>navigator.clipboard.writeText((report.rewrite?.bullets||[]).join("\n\n"))} style={{background:C.surface2,border:`1px solid ${C.border}`,color:C.textSec,padding:"6px 14px",borderRadius:6,fontSize:12,cursor:"pointer",fontWeight:500}}>Copy all</button>}/>
                 <div style={{padding:24,display:"flex",flexDirection:"column",gap:10}}>
-                  {(report.rewrite?.bullets||report.rewrite?.optimizedBullets||[]).map((b,i)=>(
+                  {(report.rewrite?.bullets||[]).map((b,i)=>(
                     <div key={i} style={{background:C.surface2,border:`1px solid ${C.border}`,borderRadius:10,padding:14,fontSize:14,lineHeight:1.7,color:C.text}}>{b}</div>
                   ))}
                 </div>
@@ -695,7 +668,6 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             </div>
           )}
 
-          {/* IMAGES */}
           {tab==="images"&&<Card><CardH icon="🖼️" title="Image & A+ Priorities" badge={{l:`${(report.imageRecs||[]).length} items`,c:"yellow"}}/>
             <div style={{padding:"0 24px"}}>{(report.imageRecs||[]).map((r,i)=>{
               const pc=r.priority==="Critical"?C.red:r.priority==="High"?C.yellow:r.priority==="Medium"?C.blue:C.green;
@@ -706,15 +678,14 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
             })}</div>
           </Card>}
 
-          {/* ACTIONS */}
           {tab==="actions"&&<Card><CardH icon="🚀" title="Priority Action Checklist" badge={{l:`${(report.actions||[]).length} items`,c:"green"}}/>
             <div style={{padding:24}}><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}}>
               {(report.actions||[]).map((a,i)=>{
-                const pc=(a.p||a.priority)==="critical"?C.red:(a.p||a.priority)==="high"?C.yellow:(a.p||a.priority)==="medium"?C.blue:C.green;
+                const pc=a.p==="critical"?C.red:a.p==="high"?C.yellow:a.p==="medium"?C.blue:C.green;
                 return (<div key={i} style={{background:C.surface2,border:`1px solid ${C.border}`,borderRadius:10,padding:18}}>
-                  <div style={{fontSize:10,fontWeight:700,color:pc,background:`${pc}18`,display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:12,letterSpacing:"0.05em",textTransform:"uppercase"}}>{a.p||a.priority}</div>
-                  <div style={{fontWeight:600,fontSize:14,color:C.text,marginBottom:6}}>{a.t||a.title}</div>
-                  <div style={{fontSize:13,color:C.textSec,lineHeight:1.6}}>{a.d||a.description}</div>
+                  <div style={{fontSize:10,fontWeight:700,color:pc,background:`${pc}18`,display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:12,letterSpacing:"0.05em",textTransform:"uppercase"}}>{a.p}</div>
+                  <div style={{fontWeight:600,fontSize:14,color:C.text,marginBottom:6}}>{a.t}</div>
+                  <div style={{fontSize:13,color:C.textSec,lineHeight:1.6}}>{a.d}</div>
                 </div>);
               })}
             </div></div>
@@ -729,23 +700,23 @@ function AuditTool({user,onLogout,onDeductCredit,onBuyCredits}) {
 // ROOT
 // ══════════════════════════════════════════════════════════════
 export default function App() {
-  const {user,signup,login,logout,deductCredit,addCredits}=useAuth();
+  const {user,signup,login,logout,refreshUser,loading}=useAuth();
   const [authModal,setAuthModal]=useState(null);
-  const [initialPlan,setInitialPlan]=useState("starter");
-  const [creditsModal,setCreditsModal]=useState(false);
 
-  const handleAuth=(email,password,plan)=>{
-    try{if(authModal==="signup") signup(email,plan); else login(email);setAuthModal(null);}catch(e){alert(e.message);}
-  };
-  const handleSelectPlan=(plan)=>{setInitialPlan(plan);setAuthModal("signup");};
-  const handlePurchase=(credits)=>{addCredits(credits);setCreditsModal(false);alert(`✅ ${credits} credits added!`);};
+  if (loading) {
+    return (
+      <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <style>{G}</style>
+        <Spinner size={32}/>
+      </div>
+    );
+  }
 
   return (
     <><style>{G}</style>
-      {user?<AuditTool user={user} onLogout={logout} onDeductCredit={deductCredit} onBuyCredits={()=>setCreditsModal(true)}/>
-        :<Landing onGetStarted={()=>{setInitialPlan("starter");setAuthModal("signup");}} onLogin={()=>setAuthModal("login")} onSelectPlan={handleSelectPlan}/>}
-      {authModal&&<AuthModal mode={authModal} initialPlan={initialPlan} onAuth={handleAuth} onClose={()=>setAuthModal(null)} onSwitch={()=>setAuthModal(authModal==="signup"?"login":"signup")}/>}
-      {creditsModal&&user&&<BuyModal onClose={()=>setCreditsModal(false)} onPurchase={handlePurchase}/>}
+      {user?<AuditTool user={user} onLogout={logout} onRefreshUser={refreshUser}/>
+        :<Landing onGetStarted={()=>setAuthModal("signup")} onLogin={()=>setAuthModal("login")}/>}
+      {authModal&&<AuthModal mode={authModal} onSignup={signup} onLogin={login} onClose={()=>setAuthModal(null)} onSwitch={()=>setAuthModal(authModal==="signup"?"login":"signup")}/>}
     </>
   );
 }
